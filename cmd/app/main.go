@@ -11,6 +11,7 @@ import (
 
 	"log-parser/internal/config"
 	"log-parser/internal/handler"
+	"log-parser/internal/service"
 	"log-parser/internal/storage"
 
 	_ "github.com/lib/pq"
@@ -31,11 +32,16 @@ func main() {
 		}
 	}()
 
+	repo := storage.NewPostgresRepo(db)
+	svc := service.NewParserService(repo)
+	pHandler := handler.NewParserHandler(svc)
+
 	// настраиваем маршрутизацию
 	mux := http.NewServeMux()
 
-	//  проверка жизнеспособности сервиса
 	mux.HandleFunc("/health", handler.HealthCheck)
+
+	mux.HandleFunc("/parse", pHandler.Parse)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
