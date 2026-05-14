@@ -43,9 +43,13 @@ func main() {
 
 	mux.HandleFunc("/parse", pHandler.Parse)
 
+	mux.HandleFunc("/logs", pHandler.GetLogs)
+
+	wrappedMux := handler.LoggingMiddleware(mux)
+
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Handler:      wrappedMux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  15 * time.Second,
