@@ -3,8 +3,11 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log-parser/internal/model"
 	"log-parser/internal/service"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 type ParserHandler struct {
@@ -32,7 +35,7 @@ func (h *ParserHandler) Parse(w http.ResponseWriter, r *http.Request) {
 
 	err := h.service.ParseAndSave(r.Context(), input.Log)
 	if err != nil {
-		// Проверяем тип ошибки
+		// проверяем тип ошибки
 		switch {
 		case errors.Is(err, service.ErrEmptyLog), errors.Is(err, service.ErrInvalidFormat):
 			sendError(w, err.Error(), http.StatusBadRequest)
@@ -60,7 +63,17 @@ func (h *ParserHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logs, err := h.service.GetLogs(r.Context())
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+
+	filter := model.LogFilter{
+		Level:  strings.ToUpper(query.Get("level")),
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	logs, err := h.service.GetLogs(r.Context(), filter)
 	if err != nil {
 		sendError(w, "Failed to fetch logs", http.StatusInternalServerError)
 		return
