@@ -1,6 +1,6 @@
 module log-parser
 
-go 1.23.3
+go 1.22
 
 require github.com/lib/pq v1.12.3
 

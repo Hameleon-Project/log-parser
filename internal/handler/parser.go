@@ -1,13 +1,12 @@
 package handler
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"log-parser/internal/model"
 	"log-parser/internal/service"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 type ParserHandler struct {
@@ -19,25 +18,25 @@ func NewParserHandler(s *service.ParserService) *ParserHandler {
 }
 
 func (h *ParserHandler) Parse(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var input struct {
-		Log string `json:"log"`
+		Path string `json:"path"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		sendError(w, "Invalid JSON body", http.StatusBadRequest)
 		return
 	}
+	if input.Path == "" {
+		sendError(w, "path is required", http.StatusBadRequest)
+		return
+	}
 
-	err := h.service.ParseAndSave(r.Context(), input.Log)
+	logID, err := h.service.ParseAndSave(r.Context(), input.Path)
 	if err != nil {
-		// проверяем тип ошибки
 		switch {
-		case errors.Is(err, service.ErrEmptyLog), errors.Is(err, service.ErrInvalidFormat):
+		case errors.Is(err, service.ErrInvalidDataPath):
+			sendError(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, service.ErrParseLog):
 			sendError(w, err.Error(), http.StatusBadRequest)
 		default:
 			sendError(w, "Internal server error", http.StatusInternalServerError)
@@ -47,38 +46,91 @@ func (h *ParserHandler) Parse(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+	_ = json.NewEncoder(w).Encode(map[string]int{"log_id": logID})
 }
 
-// функция для ответов с ошибками
+func (h *ParserHandler) GetTopology(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("log_id")
+	logID, err := strconv.Atoi(idStr)
+	if err != nil {
+		sendError(w, "Invalid log ID", http.StatusBadRequest)
+		return
+	}
+
+	topo, err := h.service.GetTopology(r.Context(), logID)
+	if err != nil {
+		sendError(w, "Failed to fetch topology", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(topo)
+}
+
+func (h *ParserHandler) GetNode(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("node_id")
+	nodeID, err := strconv.Atoi(idStr)
+	if err != nil {
+		sendError(w, "Invalid node ID", http.StatusBadRequest)
+		return
+	}
+
+	node, err := h.service.GetNodeDetails(r.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Node not found", http.StatusNotFound)
+			return
+		}
+		sendError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(node)
+}
+
+func (h *ParserHandler) GetPorts(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("node_id")
+	nodeID, err := strconv.Atoi(idStr)
+	if err != nil {
+		sendError(w, "Invalid node ID", http.StatusBadRequest)
+		return
+	}
+
+	ports, err := h.service.GetPortsByNode(r.Context(), nodeID)
+	if err != nil {
+		sendError(w, "Failed to fetch ports", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ports)
+}
+
+func (h *ParserHandler) GetLogMeta(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("log_id")
+	logID, err := strconv.Atoi(idStr)
+	if err != nil {
+		sendError(w, "Invalid log ID", http.StatusBadRequest)
+		return
+	}
+
+	meta, err := h.service.GetLogMeta(r.Context(), logID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendError(w, "Log not found", http.StatusNotFound)
+			return
+		}
+		sendError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(meta)
+}
+
 func sendError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-func (h *ParserHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	query := r.URL.Query()
-	limit, _ := strconv.Atoi(query.Get("limit"))
-	offset, _ := strconv.Atoi(query.Get("offset"))
-
-	filter := model.LogFilter{
-		Level:  strings.ToUpper(query.Get("level")),
-		Limit:  limit,
-		Offset: offset,
-	}
-
-	logs, err := h.service.GetLogs(r.Context(), filter)
-	if err != nil {
-		sendError(w, "Failed to fetch logs", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(logs)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

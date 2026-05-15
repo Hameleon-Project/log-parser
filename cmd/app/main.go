@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,64 +18,58 @@ import (
 )
 
 func main() {
-
 	cfg := config.Load()
+
+	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
+	slog.SetDefault(slog.New(logHandler))
 
 	db, err := storage.NewPostgresStorage(cfg.DBConn)
 	if err != nil {
-		log.Fatalf("Critical error: failed to connect to database: %v", err)
+		slog.Error("db_connect_failed", "err", err)
+		os.Exit(1)
 	}
-
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Printf("Error closing database: %v", err)
-		}
-	}()
+	defer func() { _ = db.Close() }()
 
 	repo := storage.NewPostgresRepo(db)
 	svc := service.NewParserService(repo)
 	pHandler := handler.NewParserHandler(svc)
 
-	// настраиваем маршрутизацию
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", handler.HealthCheck)
+	mux.HandleFunc("POST /api/v1/parse/", pHandler.Parse)
+	mux.HandleFunc("GET /api/v1/topology/{log_id}", pHandler.GetTopology)
+	mux.HandleFunc("GET /api/v1/node/{node_id}", pHandler.GetNode)
+	mux.HandleFunc("GET /api/v1/port/{node_id}", pHandler.GetPorts)
+	mux.HandleFunc("GET /api/v1/log/{log_id}", pHandler.GetLogMeta)
 
-	mux.HandleFunc("/parse", pHandler.Parse)
-
-	mux.HandleFunc("/logs", pHandler.GetLogs)
+	mux.HandleFunc("GET /health", handler.HealthCheck)
 
 	wrappedMux := handler.LoggingMiddleware(mux)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      wrappedMux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  15 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 120 * time.Second,
 	}
 
-	// запуск сервера в отдельной горутине, чтобы не блокировал основной поток
 	go func() {
-		log.Printf("Starting Log-Parser server on port %s...", cfg.Port)
+		slog.Info("server_listen", "addr", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
+			slog.Error("server_failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
-
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	sig := <-stop
+	slog.Info("shutdown_signal", "signal", sig.String())
 
-	sign := <-stop
-	log.Printf("Received signal: %v. Initiating graceful shutdown...", sign)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+		slog.Error("shutdown_error", "err", err)
 	}
-
-	log.Println("Server exited properly")
+	slog.Info("server_stopped")
 }

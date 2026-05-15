@@ -1,0 +1,80 @@
+{
+  "info": {
+    "name": "log-parser API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "logId", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "Parse log",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('created', function () {",
+              "  pm.response.to.have.status(201);",
+              "  const j = pm.response.json();",
+              "  pm.expect(j).to.have.property('log_id');",
+              "  pm.collectionVariables.set('logId', j.log_id);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"path\": \"data/ibdiagnet2.db_csv\"\n}"
+        },
+        "url": "{{baseUrl}}/api/v1/parse/"
+      }
+    },
+    {
+      "name": "Topology",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/topology/{{logId}}"
+      }
+    },
+    {
+      "name": "Log meta",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/log/{{logId}}"
+      }
+    },
+    {
+      "name": "Node 1",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/node/1"
+      }
+    },
+    {
+      "name": "Ports node 1",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/v1/port/1"
+      }
+    }
+  ]
+}

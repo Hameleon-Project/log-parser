@@ -1,10 +1,16 @@
-.PHONY: build run test
+.PHONY: fmt test vet lint run
 
-build:
-	go build -o bin/app cmd/main.go
-
-run:
-	go run cmd/main.go
+fmt:
+	gofmt -w cmd internal
 
 test:
 	go test ./...
+
+vet:
+	go vet ./...
+
+lint: fmt vet
+	go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0 run ./...
+
+run:
+	go run ./cmd/app

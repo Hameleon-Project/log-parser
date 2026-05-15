@@ -1,31 +1,47 @@
 package config
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 )
 
 type Config struct {
-	Port   string
-	DBConn string
+	Port     string
+	DBConn   string
+	LogLevel slog.Level
 }
 
 func Load() *Config {
+	dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if dsn == "" {
+		dsn = strings.TrimSpace(os.Getenv("DB_CONN"))
+	}
+	if dsn == "" {
+		dsn = "postgres://user:password@localhost:5432/log_db?sslmode=disable"
+	}
+
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "8080"
+	}
+
 	return &Config{
-		Port: getEnv("PORT", "8080"),
-		DBConn: fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-			getEnv("DB_USER", "postgres"),
-			getEnv("DB_PASSWORD", "password"),
-			getEnv("DB_HOST", "localhost"),
-			getEnv("DB_PORT", "5432"),
-			getEnv("DB_NAME", "logs_db"),
-		),
+		Port:     port,
+		DBConn:   dsn,
+		LogLevel: parseLogLevel(os.Getenv("LOG_LEVEL")),
 	}
 }
 
-func getEnv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
+func parseLogLevel(v string) slog.Level {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
-	return fallback
 }

@@ -2,131 +2,79 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log-parser/internal/model"
-	"log-parser/internal/storage"
-	"regexp"
-	"strings"
+	"log/slog"
+	"path/filepath"
+	"time"
 )
 
-var (
-	ErrEmptyLog      = errors.New("log message cannot be empty")
-	ErrInvalidFormat = errors.New("invalid log format: expected 'LEVEL: Message'")
-	nodeRegex        = regexp.MustCompile(`Node:\s+(\w+)\s+Type:\s+(\w+)`)
-	linkRegex        = regexp.MustCompile(`Link:\s+(\w+):(\w+)\s+<->\s+(\w+):(\w+)`)
-)
-
-type ParserService struct {
-	repo storage.LogRepository
+type ParserRepository interface {
+	SaveParsedLog(ctx context.Context, filePath string, parsed *model.ParsedLog, links []model.InferredLink) (int, error)
+	GetPortsByNodeID(ctx context.Context, nodeID int) ([]model.Port, error)
+	GetLogByID(ctx context.Context, logID int) (*model.LogMeta, error)
+	GetTopology(ctx context.Context, logID int) (*model.Topology, error)
+	GetNodeByID(ctx context.Context, nodeID int) (*model.Node, error)
 }
 
-func NewParserService(repo storage.LogRepository) *ParserService {
+type ParserService struct {
+	repo ParserRepository
+}
+
+func NewParserService(repo ParserRepository) *ParserService {
 	return &ParserService{repo: repo}
 }
 
-func (s *ParserService) ParseAndSave(ctx context.Context, rawLog string) error {
-	rawLog = strings.TrimSpace(rawLog)
-	if rawLog == "" {
-		return ErrEmptyLog
-	}
-
-	parts := strings.SplitN(rawLog, ":", 2)
-	if len(parts) < 2 {
-		return ErrInvalidFormat
-	}
-
-	level := strings.ToUpper(strings.TrimSpace(parts[0]))
-	message := strings.TrimSpace(parts[1])
-
-	if message == "" {
-		return errors.New("log message content is empty")
-	}
-
-	entry := model.LogEntry{
-		Level:   level,
-		Message: message,
-	}
-
-	return s.repo.Insert(ctx, entry)
+func (s *ParserService) GetPortsByNode(ctx context.Context, nodeID int) ([]model.Port, error) {
+	return s.repo.GetPortsByNodeID(ctx, nodeID)
 }
 
-func (s *ParserService) GetLogs(ctx context.Context, filter model.LogFilter) ([]model.LogEntry, error) {
-	if filter.Limit <= 0 {
-		filter.Limit = 10
-	}
-	if filter.Limit > 100 {
-		filter.Limit = 100
-	}
-	return s.repo.GetAll(ctx, filter)
+func (s *ParserService) GetLogMeta(ctx context.Context, logID int) (*model.LogMeta, error) {
+	return s.repo.GetLogByID(ctx, logID)
 }
 
-func (s *ParserService) ParseTopology(ctx context.Context, logID int, rawData string) error {
-	// мапа для кэширования ID узлов и портов, чтобы не лезть в базу лишний раз
-	nodeCache := make(map[string]int)
-	portCache := make(map[string]int)
-
-	// парсим узлы
-	nodesMatches := nodeRegex.FindAllStringSubmatch(rawData, -1)
-	for _, match := range nodesMatches {
-		name := match[1]
-		nodeType := match[2]
-
-		node := model.Node{
-			Name: name,
-			Type: nodeType,
-		}
-
-		nodeID, err := s.repo.SaveNode(ctx, logID, node)
-		if err != nil {
-			return fmt.Errorf("failed to save node %s: %w", name, err)
-		}
-		nodeCache[name] = nodeID
-	}
-
-	// парсим связи и создаем порты
-	linksMatches := linkRegex.FindAllStringSubmatch(rawData, -1)
-	for _, match := range linksMatches {
-		nodeAName, portAName := match[1], match[2]
-		nodeBName, portBName := match[3], match[4]
-
-		// порт А
-		portAID, err := s.getOrCreatePort(ctx, nodeCache[nodeAName], portAName, portCache)
-		if err != nil {
-			return err
-		}
-
-		// порт Б
-		portBID, err := s.getOrCreatePort(ctx, nodeCache[nodeBName], portBName, portCache)
-		if err != nil {
-			return err
-		}
-
-		// создаем связь в таблице links
-		err = s.repo.CreateLink(ctx, portAID, portBID)
-		if err != nil {
-			return fmt.Errorf("failed to create link: %w", err)
-		}
-	}
-
-	return nil
+func (s *ParserService) GetTopology(ctx context.Context, logID int) (*model.Topology, error) {
+	return s.repo.GetTopology(ctx, logID)
 }
 
-// функция, чтобы не дублировать порты
-func (s *ParserService) getOrCreatePort(ctx context.Context, nodeID int, portName string, cache map[string]int) (int, error) {
-	key := fmt.Sprintf("%d:%s", nodeID, portName)
-	if id, ok := cache[key]; ok {
-		return id, nil
-	}
+func (s *ParserService) GetNodeDetails(ctx context.Context, nodeID int) (*model.Node, error) {
+	return s.repo.GetNodeByID(ctx, nodeID)
+}
 
-	portID, err := s.repo.SavePort(ctx, model.Port{
-		NodeID: nodeID,
-		Name:   portName,
-	})
+// ParseAndSave reads a log from data/ (plain export or .zip), parses it, persists topology (F-2, F-4, F-5).
+func (s *ParserService) ParseAndSave(ctx context.Context, relPath string) (int, error) {
+	start := time.Now()
+	fullPath, err := ResolveUnderDataDir(".", relPath)
 	if err != nil {
 		return 0, err
 	}
 
-	cache[key] = portID
-	return portID, nil
+	raw, err := readLogBytes(fullPath)
+	if err != nil {
+		slog.Error("log_read_failed", "path", relPath, "err", err)
+		return 0, fmt.Errorf("read log: %w", err)
+	}
+
+	parsed, err := parseIBDiagExport(raw)
+	if err != nil {
+		slog.Error("log_parse_failed", "path", relPath, "err", err, "duration_ms", time.Since(start).Milliseconds())
+		return 0, err
+	}
+
+	links := InferPortLinks(parsed)
+	storePath := filepath.ToSlash(filepath.Clean(relPath))
+	logID, err := s.repo.SaveParsedLog(ctx, storePath, parsed, links)
+	if err != nil {
+		slog.Error("log_persist_failed", "path", relPath, "err", err, "duration_ms", time.Since(start).Milliseconds())
+		return 0, fmt.Errorf("save parsed log: %w", err)
+	}
+
+	slog.Info("log_parsed",
+		"path", relPath,
+		"log_id", logID,
+		"nodes", len(parsed.Nodes),
+		"inferred_edges", len(links),
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return logID, nil
 }
